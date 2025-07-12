@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useCallback, useMemo, useEffect, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import { type PartListUnion } from '@google/genai';
 import open from 'open';
 import process from 'node:process';
@@ -25,24 +25,23 @@ import {
   MessageType,
   HistoryItemWithoutId,
   HistoryItem,
-  SlashCommandProcessorResult,
 } from '../types.js';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { createShowMemoryAction } from './useShowMemoryCommand.js';
 import { GIT_COMMIT_INFO } from '../../generated/git-commit.js';
 import { formatDuration, formatMemoryUsage } from '../utils/formatters.js';
 import { getCliVersion } from '../../utils/version.js';
 import { LoadedSettings } from '../../config/settings.js';
-import {
-  type CommandContext,
-  type SlashCommandActionReturn,
-  type SlashCommand,
-} from '../commands/types.js';
-import { CommandService } from '../../services/CommandService.js';
 
-// This interface is for the old, inline command definitions.
-// It will be removed once all commands are migrated to the new system.
-export interface LegacySlashCommand {
+export interface SlashCommandActionReturn {
+  shouldScheduleTool?: boolean;
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  message?: string; // For simple messages or errors
+}
+
+export interface SlashCommand {
   name: string;
   altName?: string;
   description?: string;
@@ -54,7 +53,7 @@ export interface LegacySlashCommand {
   ) =>
     | void
     | SlashCommandActionReturn
-    | Promise<void | SlashCommandActionReturn>;
+    | Promise<void | SlashCommandActionReturn>; // Action can now return this object
 }
 
 /**
@@ -73,13 +72,14 @@ export const useSlashCommandProcessor = (
   openThemeDialog: () => void,
   openAuthDialog: () => void,
   openEditorDialog: () => void,
+  openModelDialog: () => void,
+  performMemoryRefresh: () => Promise<void>,
   toggleCorgiMode: () => void,
   showToolDescriptions: boolean = false,
   setQuittingMessages: (message: HistoryItem[]) => void,
   openPrivacyNotice: () => void,
 ) => {
   const session = useSessionStats();
-  const [commands, setCommands] = useState<SlashCommand[]>([]);
   const gitService = useMemo(() => {
     if (!config?.getProjectRoot()) {
       return;
@@ -87,23 +87,12 @@ export const useSlashCommandProcessor = (
     return new GitService(config.getProjectRoot());
   }, [config]);
 
-  const logger = useMemo(() => {
-    const l = new Logger(config?.getSessionId() || '');
-    // The logger's initialize is async, but we can create the instance
-    // synchronously. Commands that use it will await its initialization.
-    return l;
-  }, [config]);
-
+  const pendingHistoryItems: HistoryItemWithoutId[] = [];
   const [pendingCompressionItemRef, setPendingCompressionItem] =
     useStateAndRef<HistoryItemWithoutId | null>(null);
-
-  const pendingHistoryItems = useMemo(() => {
-    const items: HistoryItemWithoutId[] = [];
-    if (pendingCompressionItemRef.current != null) {
-      items.push(pendingCompressionItemRef.current);
-    }
-    return items;
-  }, [pendingCompressionItemRef]);
+  if (pendingCompressionItemRef.current != null) {
+    pendingHistoryItems.push(pendingCompressionItemRef.current);
+  }
 
   const addMessage = useCallback(
     (message: Message) => {
@@ -153,50 +142,40 @@ export const useSlashCommandProcessor = (
     [addItem],
   );
 
-  const commandContext = useMemo(
-    (): CommandContext => ({
-      services: {
-        config,
-        settings,
-        git: gitService,
-        logger,
-      },
-      ui: {
-        addItem,
-        clear: () => {
-          clearItems();
-          console.clear();
-          refreshStatic();
-        },
-        setDebugMessage: onDebugMessage,
-      },
-      session: {
-        stats: session.stats,
-      },
-    }),
-    [
-      config,
-      settings,
-      gitService,
-      logger,
-      addItem,
-      clearItems,
-      refreshStatic,
-      session.stats,
-      onDebugMessage,
-    ],
+  const showMemoryAction = useCallback(async () => {
+    const actionFn = createShowMemoryAction(config, settings, addMessage);
+    await actionFn();
+  }, [config, settings, addMessage]);
+
+  const addMemoryAction = useCallback(
+    (
+      _mainCommand: string,
+      _subCommand?: string,
+      args?: string,
+    ): SlashCommandActionReturn | void => {
+      if (!args || args.trim() === '') {
+        addMessage({
+          type: MessageType.ERROR,
+          content: 'Usage: /memory add <text to remember>',
+          timestamp: new Date(),
+        });
+        return;
+      }
+      // UI feedback for attempting to schedule
+      addMessage({
+        type: MessageType.INFO,
+        content: `Attempting to save to memory: "${args.trim()}"`,
+        timestamp: new Date(),
+      });
+      // Return info for scheduling the tool call
+      return {
+        shouldScheduleTool: true,
+        toolName: 'save_memory',
+        toolArgs: { fact: args.trim() },
+      };
+    },
+    [addMessage],
   );
-
-  const commandService = useMemo(() => new CommandService(), []);
-
-  useEffect(() => {
-    const load = async () => {
-      await commandService.loadCommands();
-      setCommands(commandService.getCommands());
-    };
-
-    load();
-  }, [commandService]);
 
   const savedChatTags = useCallback(async () => {
     const geminiDir = config?.getProjectTempDir();
@@ -215,12 +194,17 @@ export const useSlashCommandProcessor = (
     }
   }, [config]);
 
-  // Define legacy commands
-  // This list contains all commands that have NOT YET been migrated to the
-  // new system. As commands are migrated, they are removed from this list.
-  const legacyCommands: LegacySlashCommand[] = useMemo(() => {
-    const commands: LegacySlashCommand[] = [
-      // `/help` and `/clear` have been migrated and REMOVED from this list.
+  const slashCommands: SlashCommand[] = useMemo(() => {
+    const commands: SlashCommand[] = [
+      {
+        name: 'help',
+        altName: '?',
+        description: 'for help on gemini-cli',
+        action: (_mainCommand, _subCommand, _args) => {
+          onDebugMessage('Opening help.');
+          setShowHelp(true);
+        },
+      },
       {
         name: 'docs',
         description: 'open full Gemini CLI documentation in your browser',
@@ -243,6 +227,17 @@ export const useSlashCommandProcessor = (
         },
       },
       {
+        name: 'clear',
+        description: 'clear the screen and conversation history',
+        action: async (_mainCommand, _subCommand, _args) => {
+          onDebugMessage('Clearing terminal and resetting chat.');
+          clearItems();
+          await config?.getGeminiClient()?.resetChat();
+          console.clear();
+          refreshStatic();
+        },
+      },
+      {
         name: 'theme',
         description: 'change the theme',
         action: (_mainCommand, _subCommand, _args) => {
@@ -252,17 +247,30 @@ export const useSlashCommandProcessor = (
       {
         name: 'auth',
         description: 'change the auth method',
-        action: (_mainCommand, _subCommand, _args) => openAuthDialog(),
+        action: (_mainCommand, _subCommand, _args) => {
+          openAuthDialog();
+        },
       },
       {
         name: 'editor',
         description: 'set external editor preference',
-        action: (_mainCommand, _subCommand, _args) => openEditorDialog(),
+        action: (_mainCommand, _subCommand, _args) => {
+          openEditorDialog();
+        },
+      },
+      {
+        name: 'model',
+        description: 'select or switch AI model',
+        action: (_mainCommand, _subCommand, _args) => {
+          openModelDialog();
+        },
       },
       {
         name: 'privacy',
         description: 'display the privacy notice',
-        action: (_mainCommand, _subCommand, _args) => openPrivacyNotice(),
+        action: (_mainCommand, _subCommand, _args) => {
+          openPrivacyNotice();
+        },
       },
       {
         name: 'stats',
@@ -494,31 +502,35 @@ export const useSlashCommandProcessor = (
         },
       },
       {
-        name: 'extensions',
-        description: 'list active extensions',
-        action: async () => {
-          const activeExtensions = config?.getActiveExtensions();
-          if (!activeExtensions || activeExtensions.length === 0) {
-            addMessage({
-              type: MessageType.INFO,
-              content: 'No active extensions.',
-              timestamp: new Date(),
-            });
-            return;
+        name: 'memory',
+        description:
+          'manage memory. Usage: /memory <show|refresh|add> [text for add]',
+        action: (mainCommand, subCommand, args) => {
+          switch (subCommand) {
+            case 'show':
+              showMemoryAction();
+              return;
+            case 'refresh':
+              performMemoryRefresh();
+              return;
+            case 'add':
+              return addMemoryAction(mainCommand, subCommand, args); // Return the object
+            case undefined:
+              addMessage({
+                type: MessageType.ERROR,
+                content:
+                  'Missing command\nUsage: /memory <show|refresh|add> [text for add]',
+                timestamp: new Date(),
+              });
+              return;
+            default:
+              addMessage({
+                type: MessageType.ERROR,
+                content: `Unknown /memory command: ${subCommand}. Available: show, refresh, add`,
+                timestamp: new Date(),
+              });
+              return;
           }
-
-          let message = 'Active extensions:\n\n';
-          for (const ext of activeExtensions) {
-            message += `  - \u001b[36m${ext.name} (v${ext.version})\u001b[0m\n`;
-          }
-          // Make sure to reset any ANSI formatting at the end to prevent it from affecting the terminal
-          message += '\u001b[0m';
-
-          addMessage({
-            type: MessageType.INFO,
-            content: message,
-            timestamp: new Date(),
-          });
         },
       },
       {
@@ -880,8 +892,7 @@ export const useSlashCommandProcessor = (
           try {
             const compressed = await config!
               .getGeminiClient()!
-              // TODO: Set Prompt id for CompressChat from SlashCommandProcessor.
-              .tryCompressChat('Prompt Id not set', true);
+              .tryCompressChat(true);
             if (compressed) {
               addMessage({
                 type: MessageType.COMPRESSION,
@@ -1017,7 +1028,7 @@ export const useSlashCommandProcessor = (
             }
 
             return {
-              type: 'tool',
+              shouldScheduleTool: true,
               toolName: toolCallData.toolCall.name,
               toolArgs: toolCallData.toolCall.args,
             };
@@ -1033,11 +1044,17 @@ export const useSlashCommandProcessor = (
     }
     return commands;
   }, [
-    addMessage,
+    onDebugMessage,
+    setShowHelp,
+    refreshStatic,
     openThemeDialog,
     openAuthDialog,
     openEditorDialog,
-    openPrivacyNotice,
+    clearItems,
+    performMemoryRefresh,
+    showMemoryAction,
+    addMemoryAction,
+    addMessage,
     toggleCorgiMode,
     savedChatTags,
     config,
@@ -1050,23 +1067,20 @@ export const useSlashCommandProcessor = (
     setQuittingMessages,
     pendingCompressionItemRef,
     setPendingCompressionItem,
-    clearItems,
-    refreshStatic,
+    openPrivacyNotice,
   ]);
 
   const handleSlashCommand = useCallback(
     async (
       rawQuery: PartListUnion,
-    ): Promise<SlashCommandProcessorResult | false> => {
+    ): Promise<SlashCommandActionReturn | boolean> => {
       if (typeof rawQuery !== 'string') {
         return false;
       }
-
       const trimmed = rawQuery.trim();
       if (!trimmed.startsWith('/') && !trimmed.startsWith('?')) {
         return false;
       }
-
       const userMessageTimestamp = Date.now();
       if (trimmed !== '/quit' && trimmed !== '/exit') {
         addItem(
@@ -1075,128 +1089,35 @@ export const useSlashCommandProcessor = (
         );
       }
 
-      const parts = trimmed.substring(1).trim().split(/\s+/);
-      const commandPath = parts.filter((p) => p); // The parts of the command, e.g., ['memory', 'add']
+      let subCommand: string | undefined;
+      let args: string | undefined;
 
-      // --- Start of New Tree Traversal Logic ---
-
-      let currentCommands = commands;
-      let commandToExecute: SlashCommand | undefined;
-      let pathIndex = 0;
-
-      for (const part of commandPath) {
-        const foundCommand = currentCommands.find(
-          (cmd) => cmd.name === part || cmd.altName === part,
-        );
-
-        if (foundCommand) {
-          commandToExecute = foundCommand;
-          pathIndex++;
-          if (foundCommand.subCommands) {
-            currentCommands = foundCommand.subCommands;
-          } else {
-            break;
-          }
-        } else {
-          break;
+      const commandToMatch = (() => {
+        if (trimmed.startsWith('?')) {
+          return 'help';
         }
-      }
-
-      if (commandToExecute) {
-        const args = parts.slice(pathIndex).join(' ');
-
-        if (commandToExecute.action) {
-          const result = await commandToExecute.action(commandContext, args);
-
-          if (result) {
-            switch (result.type) {
-              case 'tool':
-                return {
-                  type: 'schedule_tool',
-                  toolName: result.toolName,
-                  toolArgs: result.toolArgs,
-                };
-              case 'message':
-                addItem(
-                  {
-                    type:
-                      result.messageType === 'error'
-                        ? MessageType.ERROR
-                        : MessageType.INFO,
-                    text: result.content,
-                  },
-                  Date.now(),
-                );
-                return { type: 'handled' };
-              case 'dialog':
-                switch (result.dialog) {
-                  case 'help':
-                    setShowHelp(true);
-                    return { type: 'handled' };
-                  default: {
-                    const unhandled: never = result.dialog;
-                    throw new Error(
-                      `Unhandled slash command result: ${unhandled}`,
-                    );
-                  }
-                }
-              default: {
-                const unhandled: never = result;
-                throw new Error(`Unhandled slash command result: ${unhandled}`);
-              }
-            }
-          }
-
-          return { type: 'handled' };
-        } else if (commandToExecute.subCommands) {
-          const helpText = `Command '/${commandToExecute.name}' requires a subcommand. Available:\n${commandToExecute.subCommands
-            .map((sc) => `  - ${sc.name}: ${sc.description || ''}`)
-            .join('\n')}`;
-          addMessage({
-            type: MessageType.INFO,
-            content: helpText,
-            timestamp: new Date(),
-          });
-          return { type: 'handled' };
+        const parts = trimmed.substring(1).trim().split(/\s+/);
+        if (parts.length > 1) {
+          subCommand = parts[1];
         }
-      }
+        if (parts.length > 2) {
+          args = parts.slice(2).join(' ');
+        }
+        return parts[0];
+      })();
 
-      // --- End of New Tree Traversal Logic ---
+      const mainCommand = commandToMatch;
 
-      // --- Legacy Fallback Logic (for commands not yet migrated) ---
-
-      const mainCommand = parts[0];
-      const subCommand = parts[1];
-      const legacyArgs = parts.slice(2).join(' ');
-
-      for (const cmd of legacyCommands) {
+      for (const cmd of slashCommands) {
         if (mainCommand === cmd.name || mainCommand === cmd.altName) {
-          const actionResult = await cmd.action(
-            mainCommand,
-            subCommand,
-            legacyArgs,
-          );
-
-          if (actionResult?.type === 'tool') {
-            return {
-              type: 'schedule_tool',
-              toolName: actionResult.toolName,
-              toolArgs: actionResult.toolArgs,
-            };
+          const actionResult = await cmd.action(mainCommand, subCommand, args);
+          if (
+            typeof actionResult === 'object' &&
+            actionResult?.shouldScheduleTool
+          ) {
+            return actionResult; // Return the object for useGeminiStream
           }
-          if (actionResult?.type === 'message') {
-            addItem(
-              {
-                type:
-                  actionResult.messageType === 'error'
-                    ? MessageType.ERROR
-                    : MessageType.INFO,
-                text: actionResult.content,
-              },
-              Date.now(),
-            );
-          }
-          return { type: 'handled' };
+          return true; // Command was handled, but no tool to schedule
         }
       }
 
@@ -1205,51 +1126,10 @@ export const useSlashCommandProcessor = (
         content: `Unknown command: ${trimmed}`,
         timestamp: new Date(),
       });
-      return { type: 'handled' };
+      return true; // Indicate command was processed (even if unknown)
     },
-    [
-      addItem,
-      setShowHelp,
-      commands,
-      legacyCommands,
-      commandContext,
-      addMessage,
-    ],
+    [addItem, slashCommands, addMessage],
   );
 
-  const allCommands = useMemo(() => {
-    // Adapt legacy commands to the new SlashCommand interface
-    const adaptedLegacyCommands: SlashCommand[] = legacyCommands.map(
-      (legacyCmd) => ({
-        name: legacyCmd.name,
-        altName: legacyCmd.altName,
-        description: legacyCmd.description,
-        action: async (_context: CommandContext, args: string) => {
-          const parts = args.split(/\s+/);
-          const subCommand = parts[0] || undefined;
-          const restOfArgs = parts.slice(1).join(' ') || undefined;
-
-          return legacyCmd.action(legacyCmd.name, subCommand, restOfArgs);
-        },
-        completion: legacyCmd.completion
-          ? async (_context: CommandContext, _partialArg: string) =>
-              legacyCmd.completion!()
-          : undefined,
-      }),
-    );
-
-    const newCommandNames = new Set(commands.map((c) => c.name));
-    const filteredAdaptedLegacy = adaptedLegacyCommands.filter(
-      (c) => !newCommandNames.has(c.name),
-    );
-
-    return [...commands, ...filteredAdaptedLegacy];
-  }, [commands, legacyCommands]);
-
-  return {
-    handleSlashCommand,
-    slashCommands: allCommands,
-    pendingHistoryItems,
-    commandContext,
-  };
+  return { handleSlashCommand, slashCommands, pendingHistoryItems };
 };

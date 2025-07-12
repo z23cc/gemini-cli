@@ -64,7 +64,6 @@ export interface ToolCallRequestInfo {
   name: string;
   args: Record<string, unknown>;
   isClientInitiated: boolean;
-  prompt_id: string;
 }
 
 export interface ToolCallResponseInfo {
@@ -144,10 +143,7 @@ export class Turn {
   readonly pendingToolCalls: ToolCallRequestInfo[];
   private debugResponses: GenerateContentResponse[];
 
-  constructor(
-    private readonly chat: GeminiChat,
-    private readonly prompt_id: string,
-  ) {
+  constructor(private readonly chat: GeminiChat) {
     this.pendingToolCalls = [];
     this.debugResponses = [];
   }
@@ -157,15 +153,12 @@ export class Turn {
     signal: AbortSignal,
   ): AsyncGenerator<ServerGeminiStreamEvent> {
     try {
-      const responseStream = await this.chat.sendMessageStream(
-        {
-          message: req,
-          config: {
-            abortSignal: signal,
-          },
+      const responseStream = await this.chat.sendMessageStream({
+        message: req,
+        config: {
+          abortSignal: signal,
         },
-        this.prompt_id,
-      );
+      });
 
       for await (const resp of responseStream) {
         if (signal?.aborted) {
@@ -259,7 +252,6 @@ export class Turn {
       name,
       args,
       isClientInitiated: false,
-      prompt_id: this.prompt_id,
     };
 
     this.pendingToolCalls.push(toolCallRequest);

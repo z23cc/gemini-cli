@@ -53,7 +53,6 @@ describe('runNonInteractive', () => {
       getToolRegistry: vi.fn().mockReturnValue(mockToolRegistry),
       getGeminiClient: vi.fn().mockReturnValue(mockGeminiClient),
       getContentGeneratorConfig: vi.fn().mockReturnValue({}),
-      initialize: vi.fn(),
     } as unknown as Config;
 
     mockProcessStdoutWrite = vi.fn().mockImplementation(() => true);
@@ -81,18 +80,15 @@ describe('runNonInteractive', () => {
     })();
     mockChat.sendMessageStream.mockResolvedValue(inputStream);
 
-    await runNonInteractive(mockConfig, 'Test input', 'prompt-id-1');
+    await runNonInteractive(mockConfig, 'Test input');
 
-    expect(mockChat.sendMessageStream).toHaveBeenCalledWith(
-      {
-        message: [{ text: 'Test input' }],
-        config: {
-          abortSignal: expect.any(AbortSignal),
-          tools: [{ functionDeclarations: [] }],
-        },
+    expect(mockChat.sendMessageStream).toHaveBeenCalledWith({
+      message: [{ text: 'Test input' }],
+      config: {
+        abortSignal: expect.any(AbortSignal),
+        tools: [{ functionDeclarations: [] }],
       },
-      expect.any(String),
-    );
+    });
     expect(mockProcessStdoutWrite).toHaveBeenCalledWith('Hello');
     expect(mockProcessStdoutWrite).toHaveBeenCalledWith(' World');
     expect(mockProcessStdoutWrite).toHaveBeenCalledWith('\n');
@@ -134,7 +130,7 @@ describe('runNonInteractive', () => {
       .mockResolvedValueOnce(stream1)
       .mockResolvedValueOnce(stream2);
 
-    await runNonInteractive(mockConfig, 'Use a tool', 'prompt-id-2');
+    await runNonInteractive(mockConfig, 'Use a tool');
 
     expect(mockChat.sendMessageStream).toHaveBeenCalledTimes(2);
     expect(mockCoreExecuteToolCall).toHaveBeenCalledWith(
@@ -147,7 +143,6 @@ describe('runNonInteractive', () => {
       expect.objectContaining({
         message: [toolResponsePart],
       }),
-      expect.any(String),
     );
     expect(mockProcessStdoutWrite).toHaveBeenCalledWith('Final answer');
   });
@@ -194,7 +189,7 @@ describe('runNonInteractive', () => {
       .spyOn(console, 'error')
       .mockImplementation(() => {});
 
-    await runNonInteractive(mockConfig, 'Trigger tool error', 'prompt-id-3');
+    await runNonInteractive(mockConfig, 'Trigger tool error');
 
     expect(mockCoreExecuteToolCall).toHaveBeenCalled();
     expect(consoleErrorSpy).toHaveBeenCalledWith(
@@ -204,7 +199,6 @@ describe('runNonInteractive', () => {
       expect.objectContaining({
         message: [errorResponsePart],
       }),
-      expect.any(String),
     );
     expect(mockProcessStdoutWrite).toHaveBeenCalledWith(
       'Could not complete request.',
@@ -218,7 +212,7 @@ describe('runNonInteractive', () => {
       .spyOn(console, 'error')
       .mockImplementation(() => {});
 
-    await runNonInteractive(mockConfig, 'Initial fail', 'prompt-id-4');
+    await runNonInteractive(mockConfig, 'Initial fail');
 
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       '[API Error: API connection failed]',
@@ -270,11 +264,7 @@ describe('runNonInteractive', () => {
       .spyOn(console, 'error')
       .mockImplementation(() => {});
 
-    await runNonInteractive(
-      mockConfig,
-      'Trigger tool not found',
-      'prompt-id-5',
-    );
+    await runNonInteractive(mockConfig, 'Trigger tool not found');
 
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       'Error executing tool nonExistentTool: Tool "nonExistentTool" not found in registry.',
@@ -287,7 +277,6 @@ describe('runNonInteractive', () => {
       expect.objectContaining({
         message: [errorResponsePart],
       }),
-      expect.any(String),
     );
 
     expect(mockProcessStdoutWrite).toHaveBeenCalledWith(

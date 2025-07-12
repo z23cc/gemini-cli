@@ -13,11 +13,12 @@ import { TextBuffer } from './shared/text-buffer.js';
 import { cpSlice, cpLen } from '../utils/textUtils.js';
 import chalk from 'chalk';
 import stringWidth from 'string-width';
+import process from 'node:process';
 import { useShellHistory } from '../hooks/useShellHistory.js';
 import { useCompletion } from '../hooks/useCompletion.js';
 import { useKeypress, Key } from '../hooks/useKeypress.js';
 import { isAtCommand, isSlashCommand } from '../utils/commandUtils.js';
-import { CommandContext, SlashCommand } from '../commands/types.js';
+import { SlashCommand } from '../hooks/slashCommandProcessor.js';
 import { Config } from '@google/gemini-cli-core';
 
 export interface InputPromptProps {
@@ -25,9 +26,8 @@ export interface InputPromptProps {
   onSubmit: (value: string) => void;
   userMessages: readonly string[];
   onClearScreen: () => void;
-  config: Config;
-  slashCommands: SlashCommand[];
-  commandContext: CommandContext;
+  config: Config; // Added config for useCompletion
+  slashCommands: SlashCommand[]; // Added slashCommands for useCompletion
   placeholder?: string;
   focus?: boolean;
   inputWidth: number;
@@ -43,7 +43,6 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
   onClearScreen,
   config,
   slashCommands,
-  commandContext,
   placeholder = '  Type your message or @path/to/file',
   focus = true,
   inputWidth,
@@ -58,7 +57,6 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
     config.getTargetDir(),
     isAtCommand(buffer.text) || isSlashCommand(buffer.text),
     slashCommands,
-    commandContext,
     config,
   );
 
@@ -118,46 +116,25 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
       const suggestion = completionSuggestions[indexToUse].value;
 
       if (query.trimStart().startsWith('/')) {
-        const hasTrailingSpace = query.endsWith(' ');
-        const parts = query
-          .trimStart()
-          .substring(1)
-          .split(/\s+/)
-          .filter(Boolean);
+        const parts = query.trimStart().substring(1).split(' ');
+        const commandName = parts[0];
+        const slashIndex = query.indexOf('/');
+        const base = query.substring(0, slashIndex + 1);
 
-        let isParentPath = false;
-        // If there's no trailing space, we need to check if the current query
-        // is already a complete path to a parent command.
-        if (!hasTrailingSpace) {
-          let currentLevel: SlashCommand[] | undefined = slashCommands;
-          for (let i = 0; i < parts.length; i++) {
-            const part = parts[i];
-            const found: SlashCommand | undefined = currentLevel?.find(
-              (cmd) => cmd.name === part || cmd.altName === part,
-            );
-
-            if (found) {
-              if (i === parts.length - 1 && found.subCommands) {
-                isParentPath = true;
-              }
-              currentLevel = found.subCommands;
-            } else {
-              // Path is invalid, so it can't be a parent path.
-              currentLevel = undefined;
-              break;
-            }
+        const command = slashCommands.find((cmd) => cmd.name === commandName);
+        // Make sure completion isn't the original command when command.completion hasn't happened yet.
+        if (command && command.completion && suggestion !== commandName) {
+          const newValue = `${base}${commandName} ${suggestion}`;
+          if (newValue === query) {
+            handleSubmitAndClear(newValue);
+          } else {
+            buffer.setText(newValue);
           }
+        } else {
+          const newValue = base + suggestion;
+          buffer.setText(newValue);
+          handleSubmitAndClear(newValue);
         }
-
-        // Determine the base path of the command.
-        // - If there's a trailing space, the whole command is the base.
-        // - If it's a known parent path, the whole command is the base.
-        // - Otherwise, the base is everything EXCEPT the last partial part.
-        const basePath =
-          hasTrailingSpace || isParentPath ? parts : parts.slice(0, -1);
-        const newValue = `/${[...basePath, suggestion].join(' ')} `;
-
-        buffer.setText(newValue);
       } else {
         const atIndex = query.lastIndexOf('@');
         if (atIndex === -1) return;
@@ -175,7 +152,13 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
       }
       resetCompletionState();
     },
-    [resetCompletionState, buffer, completionSuggestions, slashCommands],
+    [
+      resetCompletionState,
+      handleSubmitAndClear,
+      buffer,
+      completionSuggestions,
+      slashCommands,
+    ],
   );
 
   const handleInput = useCallback(
@@ -183,32 +166,12 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
       if (!focus) {
         return;
       }
+      const query = buffer.text;
 
-      if (
-        key.sequence === '!' &&
-        buffer.text === '' &&
-        !completion.showSuggestions
-      ) {
+      if (key.sequence === '!' && query === '' && !completion.showSuggestions) {
         setShellModeActive(!shellModeActive);
         buffer.setText(''); // Clear the '!' from input
-        return;
-      }
-
-      if (key.name === 'escape') {
-        if (shellModeActive) {
-          setShellModeActive(false);
-          return;
-        }
-
-        if (completion.showSuggestions) {
-          completion.resetCompletionState();
-          return;
-        }
-      }
-
-      if (key.ctrl && key.name === 'l') {
-        onClearScreen();
-        return;
+        return true;
       }
 
       if (completion.showSuggestions) {
@@ -220,12 +183,11 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
           completion.navigateDown();
           return;
         }
-
-        if (key.name === 'tab' || (key.name === 'return' && !key.ctrl)) {
+        if (key.name === 'tab') {
           if (completion.suggestions.length > 0) {
             const targetIndex =
               completion.activeSuggestionIndex === -1
-                ? 0 // Default to the first if none is active
+                ? 0
                 : completion.activeSuggestionIndex;
             if (targetIndex < completion.suggestions.length) {
               handleAutocomplete(targetIndex);
@@ -233,72 +195,67 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
           }
           return;
         }
-      } else {
-        if (!shellModeActive) {
-          if (key.ctrl && key.name === 'p') {
-            inputHistory.navigateUp();
-            return;
+        if (key.name === 'return') {
+          if (completion.activeSuggestionIndex >= 0) {
+            handleAutocomplete(completion.activeSuggestionIndex);
+          } else if (query.trim()) {
+            handleSubmitAndClear(query);
           }
-          if (key.ctrl && key.name === 'n') {
-            inputHistory.navigateDown();
-            return;
-          }
-          // Handle arrow-up/down for history on single-line or at edges
-          if (
-            key.name === 'up' &&
-            (buffer.allVisualLines.length === 1 ||
-              (buffer.visualCursor[0] === 0 && buffer.visualScrollRow === 0))
-          ) {
-            inputHistory.navigateUp();
-            return;
-          }
-          if (
-            key.name === 'down' &&
-            (buffer.allVisualLines.length === 1 ||
-              buffer.visualCursor[0] === buffer.allVisualLines.length - 1)
-          ) {
-            inputHistory.navigateDown();
-            return;
-          }
-        } else {
-          // Shell History Navigation
-          if (key.name === 'up') {
-            const prevCommand = shellHistory.getPreviousCommand();
-            if (prevCommand !== null) buffer.setText(prevCommand);
-            return;
-          }
-          if (key.name === 'down') {
-            const nextCommand = shellHistory.getNextCommand();
-            if (nextCommand !== null) buffer.setText(nextCommand);
-            return;
-          }
+          return;
         }
-
-        if (key.name === 'return' && !key.ctrl && !key.meta && !key.paste) {
-          if (buffer.text.trim()) {
-            handleSubmitAndClear(buffer.text);
+      } else {
+        // Keybindings when suggestions are not shown
+        if (key.ctrl && key.name === 'l') {
+          onClearScreen();
+          return;
+        }
+        if (key.ctrl && key.name === 'p') {
+          inputHistory.navigateUp();
+          return;
+        }
+        if (key.ctrl && key.name === 'n') {
+          inputHistory.navigateDown();
+          return;
+        }
+        if (key.name === 'escape') {
+          if (shellModeActive) {
+            setShellModeActive(false);
+            return;
           }
+          completion.resetCompletionState();
           return;
         }
       }
 
-      // Newline insertion
-      if (key.name === 'return' && (key.ctrl || key.meta || key.paste)) {
-        buffer.newline();
-        return;
-      }
-
-      // Ctrl+A (Home) / Ctrl+E (End)
+      // Ctrl+A (Home)
       if (key.ctrl && key.name === 'a') {
         buffer.move('home');
+        buffer.moveToOffset(0);
         return;
       }
+      // Ctrl+E (End)
       if (key.ctrl && key.name === 'e') {
         buffer.move('end');
+        buffer.moveToOffset(cpLen(buffer.text));
+        return;
+      }
+      // Ctrl+L (Clear Screen)
+      if (key.ctrl && key.name === 'l') {
+        onClearScreen();
+        return;
+      }
+      // Ctrl+P (History Up)
+      if (key.ctrl && key.name === 'p' && !completion.showSuggestions) {
+        inputHistory.navigateUp();
+        return;
+      }
+      // Ctrl+N (History Down)
+      if (key.ctrl && key.name === 'n' && !completion.showSuggestions) {
+        inputHistory.navigateDown();
         return;
       }
 
-      // Kill line commands
+      // Core text editing from MultilineTextEditor's useInput
       if (key.ctrl && key.name === 'k') {
         buffer.killLineRight();
         return;
@@ -307,15 +264,97 @@ export const InputPrompt: React.FC<InputPromptProps> = ({
         buffer.killLineLeft();
         return;
       }
+      const isCtrlX =
+        (key.ctrl && (key.name === 'x' || key.sequence === '\x18')) ||
+        key.sequence === '\x18';
+      const isCtrlEFromEditor =
+        (key.ctrl && (key.name === 'e' || key.sequence === '\x05')) ||
+        key.sequence === '\x05' ||
+        (!key.ctrl &&
+          key.name === 'e' &&
+          key.sequence.length === 1 &&
+          key.sequence.charCodeAt(0) === 5);
 
-      // External editor
-      const isCtrlX = key.ctrl && (key.name === 'x' || key.sequence === '\x18');
-      if (isCtrlX) {
-        buffer.openInExternalEditor();
+      if (isCtrlX || isCtrlEFromEditor) {
+        if (isCtrlEFromEditor && !(key.ctrl && key.name === 'e')) {
+          // Avoid double handling Ctrl+E
+          buffer.openInExternalEditor();
+          return;
+        }
+        if (isCtrlX) {
+          buffer.openInExternalEditor();
+          return;
+        }
+      }
+
+      if (
+        process.env['TEXTBUFFER_DEBUG'] === '1' ||
+        process.env['TEXTBUFFER_DEBUG'] === 'true'
+      ) {
+        console.log('[InputPromptCombined] event', { key });
+      }
+
+      // Ctrl+Enter for newline, Enter for submit
+      if (key.name === 'return') {
+        const [row, col] = buffer.cursor;
+        const line = buffer.lines[row];
+        const charBefore = col > 0 ? cpSlice(line, col - 1, col) : '';
+        if (key.ctrl || key.meta || charBefore === '\\' || key.paste) {
+          // Ctrl+Enter or escaped newline
+          if (charBefore === '\\') {
+            buffer.backspace();
+          }
+          buffer.newline();
+        } else {
+          // Enter for submit
+          if (query.trim()) {
+            handleSubmitAndClear(query);
+          }
+        }
         return;
       }
 
-      // Fallback to the text buffer's default input handling for all other keys
+      // Standard arrow navigation within the buffer
+      if (key.name === 'up' && !completion.showSuggestions) {
+        if (shellModeActive) {
+          const prevCommand = shellHistory.getPreviousCommand();
+          if (prevCommand !== null) {
+            buffer.setText(prevCommand);
+          }
+          return;
+        }
+        if (
+          (buffer.allVisualLines.length === 1 || // Always navigate for single line
+            (buffer.visualCursor[0] === 0 && buffer.visualScrollRow === 0)) &&
+          inputHistory.navigateUp
+        ) {
+          inputHistory.navigateUp();
+        } else {
+          buffer.move('up');
+        }
+        return;
+      }
+      if (key.name === 'down' && !completion.showSuggestions) {
+        if (shellModeActive) {
+          const nextCommand = shellHistory.getNextCommand();
+          if (nextCommand !== null) {
+            buffer.setText(nextCommand);
+          }
+          return;
+        }
+        if (
+          (buffer.allVisualLines.length === 1 || // Always navigate for single line
+            buffer.visualCursor[0] === buffer.allVisualLines.length - 1) &&
+          inputHistory.navigateDown
+        ) {
+          inputHistory.navigateDown();
+        } else {
+          buffer.move('down');
+        }
+        return;
+      }
+
+      // Fallback to buffer's default input handling
       buffer.handleInput(key);
     },
     [

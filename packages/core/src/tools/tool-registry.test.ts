@@ -106,9 +106,9 @@ const createMockCallableTool = (
 class MockTool extends BaseTool<{ param: string }, ToolResult> {
   constructor(name = 'mock-tool', description = 'A mock tool') {
     super(name, name, description, {
-      type: Type.OBJECT,
+      type: 'object',
       properties: {
-        param: { type: Type.STRING },
+        param: { type: 'string' },
       },
       required: ['param'],
     });

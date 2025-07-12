@@ -125,6 +125,7 @@ Signal: Signal number or \`(none)\` if no signal was received.
 
 export class ToolRegistry {
   private tools: Map<string, Tool> = new Map();
+  private discovery: Promise<void> | null = null;
   private config: Config;
 
   constructor(config: Config) {
@@ -154,6 +155,8 @@ export class ToolRegistry {
     for (const tool of this.tools.values()) {
       if (tool instanceof DiscoveredTool || tool instanceof DiscoveredMCPTool) {
         this.tools.delete(tool.name);
+      } else {
+        // Keep manually registered tools
       }
     }
 

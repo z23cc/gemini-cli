@@ -14,11 +14,8 @@ export async function createCodeAssistContentGenerator(
   authType: AuthType,
   sessionId?: string,
 ): Promise<ContentGenerator> {
-  if (
-    authType === AuthType.LOGIN_WITH_GOOGLE ||
-    authType === AuthType.CLOUD_SHELL
-  ) {
-    const authClient = await getOauthClient(authType);
+  if (authType === AuthType.LOGIN_WITH_GOOGLE) {
+    const authClient = await getOauthClient();
     const projectId = await setupUser(authClient);
     return new CodeAssistServer(authClient, projectId, httpOptions, sessionId);
   }

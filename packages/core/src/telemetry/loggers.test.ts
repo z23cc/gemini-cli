@@ -127,7 +127,7 @@ describe('loggers', () => {
     } as unknown as Config;
 
     it('should log a user prompt', () => {
-      const event = new UserPromptEvent(11, 'prompt-id-8', 'test-prompt');
+      const event = new UserPromptEvent(11, 'test-prompt');
 
       logUserPrompt(mockConfig, event);
 
@@ -201,7 +201,6 @@ describe('loggers', () => {
       const event = new ApiResponseEvent(
         'test-model',
         100,
-        'prompt-id-1',
         usageData,
         'test-response',
       );
@@ -225,7 +224,6 @@ describe('loggers', () => {
           tool_token_count: 2,
           total_token_count: 0,
           response_text: 'test-response',
-          prompt_id: 'prompt-id-1',
         },
       });
 
@@ -262,7 +260,6 @@ describe('loggers', () => {
       const event = new ApiResponseEvent(
         'test-model',
         100,
-        'prompt-id-1',
         usageData,
         'test-response',
         'test-error',
@@ -299,11 +296,7 @@ describe('loggers', () => {
     } as Config;
 
     it('should log an API request with request_text', () => {
-      const event = new ApiRequestEvent(
-        'test-model',
-        'prompt-id-7',
-        'This is a test request',
-      );
+      const event = new ApiRequestEvent('test-model', 'This is a test request');
 
       logApiRequest(mockConfig, event);
 
@@ -315,13 +308,12 @@ describe('loggers', () => {
           'event.timestamp': '2025-01-01T00:00:00.000Z',
           model: 'test-model',
           request_text: 'This is a test request',
-          prompt_id: 'prompt-id-7',
         },
       });
     });
 
     it('should log an API request without request_text', () => {
-      const event = new ApiRequestEvent('test-model', 'prompt-id-6');
+      const event = new ApiRequestEvent('test-model');
 
       logApiRequest(mockConfig, event);
 
@@ -332,7 +324,6 @@ describe('loggers', () => {
           'event.name': EVENT_API_REQUEST,
           'event.timestamp': '2025-01-01T00:00:00.000Z',
           model: 'test-model',
-          prompt_id: 'prompt-id-6',
         },
       });
     });
@@ -403,7 +394,6 @@ describe('loggers', () => {
           },
           callId: 'test-call-id',
           isClientInitiated: true,
-          prompt_id: 'prompt-id-1',
         },
         response: {
           callId: 'test-call-id',
@@ -437,7 +427,6 @@ describe('loggers', () => {
           duration_ms: 100,
           success: true,
           decision: ToolCallDecision.ACCEPT,
-          prompt_id: 'prompt-id-1',
         },
       });
 
@@ -466,7 +455,6 @@ describe('loggers', () => {
           },
           callId: 'test-call-id',
           isClientInitiated: true,
-          prompt_id: 'prompt-id-2',
         },
         response: {
           callId: 'test-call-id',
@@ -499,7 +487,6 @@ describe('loggers', () => {
           duration_ms: 100,
           success: false,
           decision: ToolCallDecision.REJECT,
-          prompt_id: 'prompt-id-2',
         },
       });
 
@@ -529,7 +516,6 @@ describe('loggers', () => {
           },
           callId: 'test-call-id',
           isClientInitiated: true,
-          prompt_id: 'prompt-id-3',
         },
         response: {
           callId: 'test-call-id',
@@ -563,7 +549,6 @@ describe('loggers', () => {
           duration_ms: 100,
           success: true,
           decision: ToolCallDecision.MODIFY,
-          prompt_id: 'prompt-id-3',
         },
       });
 
@@ -593,7 +578,6 @@ describe('loggers', () => {
           },
           callId: 'test-call-id',
           isClientInitiated: true,
-          prompt_id: 'prompt-id-4',
         },
         response: {
           callId: 'test-call-id',
@@ -625,7 +609,6 @@ describe('loggers', () => {
           ),
           duration_ms: 100,
           success: true,
-          prompt_id: 'prompt-id-4',
         },
       });
 
@@ -655,7 +638,6 @@ describe('loggers', () => {
           },
           callId: 'test-call-id',
           isClientInitiated: true,
-          prompt_id: 'prompt-id-5',
         },
         response: {
           callId: 'test-call-id',
@@ -693,7 +675,6 @@ describe('loggers', () => {
           'error.message': 'test-error',
           error_type: 'test-error-type',
           'error.type': 'test-error-type',
-          prompt_id: 'prompt-id-5',
         },
       });
 

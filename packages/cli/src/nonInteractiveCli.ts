@@ -46,9 +46,7 @@ function getResponseText(response: GenerateContentResponse): string | null {
 export async function runNonInteractive(
   config: Config,
   input: string,
-  prompt_id: string,
 ): Promise<void> {
-  await config.initialize();
   // Handle EPIPE errors when the output is piped to a command that closes early.
   process.stdout.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EPIPE') {
@@ -68,18 +66,15 @@ export async function runNonInteractive(
     while (true) {
       const functionCalls: FunctionCall[] = [];
 
-      const responseStream = await chat.sendMessageStream(
-        {
-          message: currentMessages[0]?.parts || [], // Ensure parts are always provided
-          config: {
-            abortSignal: abortController.signal,
-            tools: [
-              { functionDeclarations: toolRegistry.getFunctionDeclarations() },
-            ],
-          },
+      const responseStream = await chat.sendMessageStream({
+        message: currentMessages[0]?.parts || [], // Ensure parts are always provided
+        config: {
+          abortSignal: abortController.signal,
+          tools: [
+            { functionDeclarations: toolRegistry.getFunctionDeclarations() },
+          ],
         },
-        prompt_id,
-      );
+      });
 
       for await (const resp of responseStream) {
         if (abortController.signal.aborted) {
@@ -105,7 +100,6 @@ export async function runNonInteractive(
             name: fc.name as string,
             args: (fc.args ?? {}) as Record<string, unknown>,
             isClientInitiated: false,
-            prompt_id,
           };
 
           const toolResponse = await executeToolCall(

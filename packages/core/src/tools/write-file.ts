@@ -16,7 +16,6 @@ import {
   ToolConfirmationOutcome,
   ToolCallConfirmationDetails,
 } from './tools.js';
-import { Type } from '@google/genai';
 import { SchemaValidator } from '../utils/schemaValidator.js';
 import { makeRelative, shortenPath } from '../utils/paths.js';
 import { getErrorMessage, isNodeError } from '../utils/errors.js';
@@ -24,6 +23,7 @@ import {
   ensureCorrectEdit,
   ensureCorrectFileContent,
 } from '../utils/editCorrector.js';
+import { GeminiClient } from '../core/client.js';
 import { DEFAULT_DIFF_OPTIONS } from './diffOptions.js';
 import { ModifiableTool, ModifyContext } from './modifiable-tool.js';
 import { getSpecificMimeType } from '../utils/fileUtils.js';
@@ -67,6 +67,7 @@ export class WriteFileTool
   implements ModifiableTool<WriteFileToolParams>
 {
   static readonly Name: string = 'write_file';
+  private readonly client: GeminiClient;
 
   constructor(private readonly config: Config) {
     super(
@@ -80,17 +81,19 @@ export class WriteFileTool
           file_path: {
             description:
               "The absolute path to the file to write to (e.g., '/home/user/project/file.txt'). Relative paths are not supported.",
-            type: Type.STRING,
+            type: 'string',
           },
           content: {
             description: 'The content to write to the file.',
-            type: Type.STRING,
+            type: 'string',
           },
         },
         required: ['file_path', 'content'],
-        type: Type.OBJECT,
+        type: 'object',
       },
     );
+
+    this.client = this.config.getGeminiClient();
   }
 
   /**
@@ -113,11 +116,15 @@ export class WriteFileTool
   }
 
   validateToolParams(params: WriteFileToolParams): string | null {
-    const errors = SchemaValidator.validate(this.schema.parameters, params);
-    if (errors) {
-      return errors;
+    if (
+      this.schema.parameters &&
+      !SchemaValidator.validate(
+        this.schema.parameters as Record<string, unknown>,
+        params,
+      )
+    ) {
+      return 'Parameters failed schema validation.';
     }
-
     const filePath = params.file_path;
     if (!path.isAbsolute(filePath)) {
       return `File path must be absolute: ${filePath}`;
@@ -360,14 +367,13 @@ export class WriteFileTool
     if (fileExists) {
       // This implies originalContent is available
       const { params: correctedParams } = await ensureCorrectEdit(
-        filePath,
         originalContent,
         {
           old_string: originalContent, // Treat entire current content as old_string
           new_string: proposedContent,
           file_path: filePath,
         },
-        this.config.getGeminiClient(),
+        this.client,
         abortSignal,
       );
       correctedContent = correctedParams.new_string;
@@ -375,7 +381,7 @@ export class WriteFileTool
       // This implies new file (ENOENT)
       correctedContent = await ensureCorrectFileContent(
         proposedContent,
-        this.config.getGeminiClient(),
+        this.client,
         abortSignal,
       );
     }

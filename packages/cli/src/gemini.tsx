@@ -7,7 +7,7 @@
 import React from 'react';
 import { render } from 'ink';
 import { AppWrapper } from './ui/App.js';
-import { loadCliConfig } from './config/config.js';
+import { loadCliConfig, getCliArguments } from './config/config.js';
 import { readStdin } from './utils/readStdin.js';
 import { basename } from 'node:path';
 import v8 from 'node:v8';
@@ -17,8 +17,8 @@ import { start_sandbox } from './utils/sandbox.js';
 import {
   LoadedSettings,
   loadSettings,
-  USER_SETTINGS_PATH,
   SettingScope,
+  USER_SETTINGS_PATH,
 } from './config/settings.js';
 import { themeManager } from './ui/themes/theme-manager.js';
 import { getStartupWarnings } from './utils/startupWarnings.js';
@@ -103,28 +103,27 @@ export async function main() {
   const extensions = loadExtensions(workspaceRoot);
   const config = await loadCliConfig(settings.merged, extensions, sessionId);
 
-  if (config.getListExtensions()) {
-    console.log('Installed extensions:');
-    for (const extension of extensions) {
-      console.log(`- ${extension.config.name}`);
-    }
-    process.exit(0);
-  }
-
-  // Set a default auth type if one isn't set.
-  if (!settings.merged.selectedAuthType) {
-    if (process.env.CLOUD_SHELL === 'true') {
-      settings.setValue(
-        SettingScope.User,
-        'selectedAuthType',
-        AuthType.CLOUD_SHELL,
-      );
-    }
+  // set default fallback to gemini api key
+  // this has to go after load cli because that's where the env is set
+  if (!settings.merged.selectedAuthType && process.env.GEMINI_API_KEY) {
+    settings.setValue(
+      SettingScope.User,
+      'selectedAuthType',
+      AuthType.USE_GEMINI,
+    );
   }
 
   setMaxSizedBoxDebugging(config.getDebugMode());
 
-  await config.initialize();
+  // Initialize centralized FileDiscoveryService
+  config.getFileService();
+  if (config.getCheckpointingEnabled()) {
+    try {
+      await config.getGitService();
+    } catch {
+      // For now swallow the error, later log it.
+    }
+  }
 
   if (settings.merged.theme) {
     if (!themeManager.setActiveTheme(settings.merged.theme)) {
@@ -134,11 +133,12 @@ export async function main() {
     }
   }
 
+  const memoryArgs = settings.merged.autoConfigureMaxOldSpaceSize
+    ? getNodeMemoryArgs(config)
+    : [];
+
   // hop into sandbox if we are outside and sandboxing is enabled
   if (!process.env.SANDBOX) {
-    const memoryArgs = settings.merged.autoConfigureMaxOldSpaceSize
-      ? getNodeMemoryArgs(config)
-      : [];
     const sandboxConfig = config.getSandbox();
     if (sandboxConfig) {
       if (settings.merged.selectedAuthType) {
@@ -196,34 +196,31 @@ export async function main() {
     process.exit(1);
   }
 
-  const prompt_id = Math.random().toString(16).slice(2);
   logUserPrompt(config, {
     'event.name': 'user_prompt',
     'event.timestamp': new Date().toISOString(),
     prompt: input,
-    prompt_id,
     prompt_length: input.length,
   });
+
+  // Get CLI arguments to check for auth-type
+  const cliArgs = await getCliArguments();
 
   // Non-interactive mode handled by runNonInteractive
   const nonInteractiveConfig = await loadNonInteractiveConfig(
     config,
     extensions,
     settings,
+    cliArgs['auth-type'],
   );
 
-  await runNonInteractive(nonInteractiveConfig, input, prompt_id);
+  await runNonInteractive(nonInteractiveConfig, input);
   process.exit(0);
 }
 
 function setWindowTitle(title: string, settings: LoadedSettings) {
   if (!settings.merged.hideWindowTitle) {
-    const windowTitle = (process.env.CLI_TITLE || `Gemini - ${title}`).replace(
-      // eslint-disable-next-line no-control-regex
-      /[\x00-\x1F\x7F]/g,
-      '',
-    );
-    process.stdout.write(`\x1b]2;${windowTitle}\x07`);
+    process.stdout.write(`\x1b]2; Gemini - ${title} \x07`);
 
     process.on('exit', () => {
       process.stdout.write(`\x1b]2;\x07`);
@@ -250,6 +247,7 @@ async function loadNonInteractiveConfig(
   config: Config,
   extensions: Extension[],
   settings: LoadedSettings,
+  cliAuthType?: string,
 ) {
   let finalConfig = config;
   if (config.getApprovalMode() !== ApprovalMode.YOLO) {
@@ -274,30 +272,41 @@ async function loadNonInteractiveConfig(
       extensions,
       config.getSessionId(),
     );
-    await finalConfig.initialize();
   }
 
   return await validateNonInterActiveAuth(
     settings.merged.selectedAuthType,
     finalConfig,
+    cliAuthType,
   );
 }
 
 async function validateNonInterActiveAuth(
   selectedAuthType: AuthType | undefined,
   nonInteractiveConfig: Config,
+  cliAuthType?: string,
 ) {
-  // making a special case for the cli. many headless environments might not have a settings.json set
-  // so if GEMINI_API_KEY is set, we'll use that. However since the oauth things are interactive anyway, we'll
-  // still expect that exists
-  if (!selectedAuthType && !process.env.GEMINI_API_KEY) {
-    console.error(
-      `Please set an Auth method in your ${USER_SETTINGS_PATH} OR specify GEMINI_API_KEY env variable file before running`,
-    );
-    process.exit(1);
+  // Use CLI auth-type if provided, otherwise fall back to settings or environment
+  if (cliAuthType) {
+    selectedAuthType = cliAuthType as AuthType;
+  } else if (!selectedAuthType) {
+    // Check for various API keys to auto-detect auth type
+    if (process.env.GEMINI_API_KEY) {
+      selectedAuthType = AuthType.USE_GEMINI;
+    } else if (process.env.OPENAI_API_KEY) {
+      selectedAuthType = AuthType.USE_OPENAI_COMPATIBLE;
+    } else if (process.env.ANTHROPIC_API_KEY) {
+      selectedAuthType = AuthType.USE_ANTHROPIC;
+    } else if (process.env.CUSTOM_BASE_URL) {
+      selectedAuthType = AuthType.USE_LOCAL_LLM;
+    } else {
+        console.error(
+          `Please set an Auth method in your ${USER_SETTINGS_PATH} OR specify GEMINI_API_KEY env variable file before running`,
+        );
+      process.exit(1);
+    }
   }
 
-  selectedAuthType = selectedAuthType || AuthType.USE_GEMINI;
   const err = validateAuthMethod(selectedAuthType);
   if (err != null) {
     console.error(err);

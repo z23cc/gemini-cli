@@ -7,7 +7,6 @@
 import fs from 'fs';
 import path from 'path';
 import { BaseTool, ToolResult } from './tools.js';
-import { Type } from '@google/genai';
 import { SchemaValidator } from '../utils/schemaValidator.js';
 import { makeRelative, shortenPath } from '../utils/paths.js';
 import { Config } from '../config/config.js';
@@ -85,23 +84,23 @@ export class LSTool extends BaseTool<LSToolParams, ToolResult> {
           path: {
             description:
               'The absolute path to the directory to list (must be absolute, not relative)',
-            type: Type.STRING,
+            type: 'string',
           },
           ignore: {
             description: 'List of glob patterns to ignore',
             items: {
-              type: Type.STRING,
+              type: 'string',
             },
-            type: Type.ARRAY,
+            type: 'array',
           },
           respect_git_ignore: {
             description:
               'Optional: Whether to respect .gitignore patterns when listing files. Only available in git repositories. Defaults to true.',
-            type: Type.BOOLEAN,
+            type: 'boolean',
           },
         },
         required: ['path'],
-        type: Type.OBJECT,
+        type: 'object',
       },
     );
 
@@ -133,9 +132,14 @@ export class LSTool extends BaseTool<LSToolParams, ToolResult> {
    * @returns An error message string if invalid, null otherwise
    */
   validateToolParams(params: LSToolParams): string | null {
-    const errors = SchemaValidator.validate(this.schema.parameters, params);
-    if (errors) {
-      return errors;
+    if (
+      this.schema.parameters &&
+      !SchemaValidator.validate(
+        this.schema.parameters as Record<string, unknown>,
+        params,
+      )
+    ) {
+      return 'Parameters failed schema validation.';
     }
     if (!path.isAbsolute(params.path)) {
       return `Path must be absolute: ${params.path}`;

@@ -8,12 +8,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import {
   Chat,
-  Content,
   EmbedContentResponse,
   GenerateContentResponse,
   GoogleGenAI,
 } from '@google/genai';
-import { findIndexAfterFraction, GeminiClient } from './client.js';
+import { GeminiClient } from './client.js';
 import { AuthType, ContentGenerator } from './contentGenerator.js';
 import { GeminiChat } from './geminiChat.js';
 import { Config } from '../config/config.js';
@@ -65,54 +64,6 @@ vi.mock('../telemetry/index.js', () => ({
   logApiResponse: vi.fn(),
   logApiError: vi.fn(),
 }));
-
-describe('findIndexAfterFraction', () => {
-  const history: Content[] = [
-    { role: 'user', parts: [{ text: 'This is the first message.' }] },
-    { role: 'model', parts: [{ text: 'This is the second message.' }] },
-    { role: 'user', parts: [{ text: 'This is the third message.' }] },
-    { role: 'model', parts: [{ text: 'This is the fourth message.' }] },
-    { role: 'user', parts: [{ text: 'This is the fifth message.' }] },
-  ];
-
-  it('should throw an error for non-positive numbers', () => {
-    expect(() => findIndexAfterFraction(history, 0)).toThrow(
-      'Fraction must be between 0 and 1',
-    );
-  });
-
-  it('should throw an error for a fraction greater than or equal to 1', () => {
-    expect(() => findIndexAfterFraction(history, 1)).toThrow(
-      'Fraction must be between 0 and 1',
-    );
-  });
-
-  it('should handle a fraction in the middle', () => {
-    // Total length is 257. 257 * 0.5 = 128.5
-    // 0: 53
-    // 1: 53 + 54 = 107
-    // 2: 107 + 53 = 160
-    // 160 >= 128.5, so index is 2
-    expect(findIndexAfterFraction(history, 0.5)).toBe(2);
-  });
-
-  it('should handle an empty history', () => {
-    expect(findIndexAfterFraction([], 0.5)).toBe(0);
-  });
-
-  it('should handle a history with only one item', () => {
-    expect(findIndexAfterFraction(history.slice(0, 1), 0.5)).toBe(0);
-  });
-
-  it('should handle history with weird parts', () => {
-    const historyWithEmptyParts: Content[] = [
-      { role: 'user', parts: [{ text: 'Message 1' }] },
-      { role: 'model', parts: [{ fileData: { fileUri: 'derp' } }] },
-      { role: 'user', parts: [{ text: 'Message 2' }] },
-    ];
-    expect(findIndexAfterFraction(historyWithEmptyParts, 0.5)).toBe(1);
-  });
-});
 
 describe('Gemini Client (client.ts)', () => {
   let client: GeminiClient;
@@ -178,8 +129,6 @@ describe('Gemini Client (client.ts)', () => {
         getProxy: vi.fn().mockReturnValue(undefined),
         getWorkingDir: vi.fn().mockReturnValue('/test/dir'),
         getFileService: vi.fn().mockReturnValue(fileService),
-        getQuotaErrorOccurred: vi.fn().mockReturnValue(false),
-        setQuotaErrorOccurred: vi.fn(),
       };
       return mock as unknown as Config;
     });
@@ -353,7 +302,7 @@ describe('Gemini Client (client.ts)', () => {
       await client.generateJson(contents, schema, abortSignal);
 
       expect(mockGenerateContentFn).toHaveBeenCalledWith({
-        model: 'test-model', // Should use current model from config
+        model: DEFAULT_GEMINI_FLASH_MODEL,
         config: {
           abortSignal,
           systemInstruction: getCoreSystemPrompt(''),
@@ -435,7 +384,6 @@ describe('Gemini Client (client.ts)', () => {
             { role: 'user', parts: [{ text: '...history...' }] },
           ]),
         addHistory: vi.fn(),
-        setHistory: vi.fn(),
         sendMessage: mockSendMessage,
       };
       client['chat'] = mockChat as GeminiChat;
@@ -450,7 +398,7 @@ describe('Gemini Client (client.ts)', () => {
       });
 
       const initialChat = client.getChat();
-      const result = await client.tryCompressChat('prompt-id-2');
+      const result = await client.tryCompressChat();
       const newChat = client.getChat();
 
       expect(tokenLimit).toHaveBeenCalled();
@@ -476,7 +424,7 @@ describe('Gemini Client (client.ts)', () => {
       });
 
       const initialChat = client.getChat();
-      const result = await client.tryCompressChat('prompt-id-3');
+      const result = await client.tryCompressChat();
       const newChat = client.getChat();
 
       expect(tokenLimit).toHaveBeenCalled();
@@ -507,7 +455,7 @@ describe('Gemini Client (client.ts)', () => {
       });
 
       const initialChat = client.getChat();
-      const result = await client.tryCompressChat('prompt-id-1', true); // force = true
+      const result = await client.tryCompressChat(true); // force = true
       const newChat = client.getChat();
 
       expect(mockSendMessage).toHaveBeenCalled();
@@ -545,7 +493,6 @@ describe('Gemini Client (client.ts)', () => {
       const stream = client.sendMessageStream(
         [{ text: 'Hi' }],
         new AbortController().signal,
-        'prompt-id-1',
       );
 
       // Consume the stream manually to get the final return value.
@@ -598,7 +545,6 @@ describe('Gemini Client (client.ts)', () => {
       const stream = client.sendMessageStream(
         [{ text: 'Start conversation' }],
         signal,
-        'prompt-id-2',
       );
 
       // Count how many stream events we get
@@ -699,7 +645,6 @@ describe('Gemini Client (client.ts)', () => {
       const stream = client.sendMessageStream(
         [{ text: 'Start conversation' }],
         signal,
-        'prompt-id-3',
         Number.MAX_SAFE_INTEGER, // Bypass the MAX_TURNS protection
       );
 
@@ -790,7 +735,6 @@ describe('Gemini Client (client.ts)', () => {
 
       const mockChat: Partial<GeminiChat> = {
         getHistory: vi.fn().mockReturnValue(mockChatHistory),
-        setHistory: vi.fn(),
         sendMessage: mockSendMessage,
       };
 
@@ -809,7 +753,7 @@ describe('Gemini Client (client.ts)', () => {
       client['contentGenerator'] = mockGenerator as ContentGenerator;
       client['startChat'] = vi.fn().mockResolvedValue(mockChat);
 
-      const result = await client.tryCompressChat('prompt-id-4', true);
+      const result = await client.tryCompressChat(true);
 
       expect(mockCountTokens).toHaveBeenCalledTimes(2);
       expect(mockCountTokens).toHaveBeenNthCalledWith(1, {
@@ -850,8 +794,286 @@ describe('Gemini Client (client.ts)', () => {
       expect(mockFallbackHandler).toHaveBeenCalledWith(
         currentModel,
         fallbackModel,
-        undefined,
       );
+    });
+  });
+
+  describe('Model Management', () => {
+    // Mock fetch globally for these tests
+    const originalFetch = global.fetch;
+
+    beforeEach(() => {
+      global.fetch = vi.fn();
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    describe('updateModel', () => {
+      it('should update the model in config and reinitialize chat', async () => {
+        const mockSetModel = vi.fn();
+        const mockStartChat = vi.fn().mockResolvedValue({});
+
+        client['config'].setModel = mockSetModel;
+        client['startChat'] = mockStartChat;
+
+        await client.updateModel('gemini-2.5-flash');
+
+        expect(mockSetModel).toHaveBeenCalledWith('gemini-2.5-flash');
+        expect(mockStartChat).toHaveBeenCalled();
+      });
+    });
+
+    describe('listAvailableModels', () => {
+      it('should return empty array when not using Gemini API key auth', async () => {
+        vi.spyOn(client['config'], 'getContentGeneratorConfig').mockReturnValue({
+          authType: AuthType.LOGIN_WITH_GOOGLE,
+          apiKey: null,
+        } as any);
+
+        const models = await client.listAvailableModels();
+        expect(models).toEqual([]);
+      });
+
+      it('should fetch models from Gemini API when using API key auth', async () => {
+        vi.spyOn(client['config'], 'getContentGeneratorConfig').mockReturnValue({
+          authType: AuthType.USE_GEMINI,
+          apiKey: 'test-api-key',
+        } as any);
+
+        const mockResponse = {
+          ok: true,
+          json: vi.fn().mockResolvedValue({
+            models: [
+              {
+                name: 'models/gemini-2.5-pro',
+                displayName: 'Gemini 2.5 Pro',
+                description: 'Advanced model for complex tasks',
+              },
+              {
+                name: 'models/gemini-2.5-flash',
+                displayName: 'Gemini 2.5 Flash',
+                description: 'Fast model for quick responses',
+              },
+              {
+                name: 'models/text-embedding-004',
+                displayName: 'Text Embedding 004',
+                description: 'Embedding model',
+              },
+            ],
+          }),
+        };
+
+        (global.fetch as any).mockResolvedValue(mockResponse);
+
+        const models = await client.listAvailableModels();
+
+        expect(global.fetch).toHaveBeenCalledWith(
+          'https://generativelanguage.googleapis.com/v1beta/models?key=test-api-key',
+          {
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+
+        expect(models).toEqual([
+          {
+            name: 'gemini-2.5-pro',
+            displayName: 'Gemini 2.5 Pro',
+            description: 'Advanced model for complex tasks',
+          },
+          {
+            name: 'gemini-2.5-flash',
+            displayName: 'Gemini 2.5 Flash',
+            description: 'Fast model for quick responses',
+          },
+        ]);
+      });
+
+      it('should return empty array when API request fails', async () => {
+        vi.spyOn(client['config'], 'getContentGeneratorConfig').mockReturnValue({
+          authType: AuthType.USE_GEMINI,
+          apiKey: 'test-api-key',
+        } as any);
+
+        (global.fetch as any).mockRejectedValue(new Error('Network error'));
+
+        const models = await client.listAvailableModels();
+        expect(models).toEqual([]);
+      });
+
+      it('should return empty array when API returns non-ok response', async () => {
+        vi.spyOn(client['config'], 'getContentGeneratorConfig').mockReturnValue({
+          authType: AuthType.USE_GEMINI,
+          apiKey: 'test-api-key',
+        } as any);
+
+        const mockResponse = {
+          ok: false,
+          status: 401,
+          statusText: 'Unauthorized',
+        };
+
+        (global.fetch as any).mockResolvedValue(mockResponse);
+
+        const models = await client.listAvailableModels();
+        expect(models).toEqual([]);
+      });
+
+      it('should fetch models from OpenAI API when using OpenAI compatible auth', async () => {
+        vi.spyOn(client['config'], 'getContentGeneratorConfig').mockReturnValue({
+          authType: AuthType.USE_OPENAI_COMPATIBLE,
+          apiKey: 'test-openai-key',
+          baseUrl: 'https://api.openai.com/v1',
+        } as any);
+
+        const mockResponse = {
+          ok: true,
+          json: vi.fn().mockResolvedValue({
+            data: [
+              {
+                id: 'gpt-4',
+                name: 'gpt-4',
+                description: 'GPT-4 model',
+              },
+              {
+                id: 'gpt-3.5-turbo',
+                name: 'gpt-3.5-turbo',
+                description: 'GPT-3.5 Turbo model',
+              },
+              {
+                id: 'text-embedding-ada-002',
+                name: 'text-embedding-ada-002',
+                description: 'Embedding model',
+              },
+            ],
+          }),
+        };
+
+        (global.fetch as any).mockResolvedValue(mockResponse);
+
+        const models = await client.listAvailableModels();
+
+        expect(global.fetch).toHaveBeenCalledWith(
+          'https://api.openai.com/v1/models',
+          {
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer test-openai-key',
+            },
+          }
+        );
+
+        expect(models).toEqual([
+          {
+            name: 'gpt-4',
+            displayName: 'gpt-4',
+            description: 'GPT-4 model',
+          },
+          {
+            name: 'gpt-3.5-turbo',
+            displayName: 'gpt-3.5-turbo',
+            description: 'GPT-3.5 Turbo model',
+          },
+        ]);
+      });
+
+      it('should return empty array for OpenAI when missing baseUrl', async () => {
+        vi.spyOn(client['config'], 'getContentGeneratorConfig').mockReturnValue({
+          authType: AuthType.USE_OPENAI_COMPATIBLE,
+          apiKey: 'test-openai-key',
+          baseUrl: undefined,
+        } as any);
+
+        const models = await client.listAvailableModels();
+        expect(models).toEqual([]);
+      });
+
+      it('should return predefined Claude models for Anthropic auth', async () => {
+        vi.spyOn(client['config'], 'getContentGeneratorConfig').mockReturnValue({
+          authType: AuthType.USE_ANTHROPIC,
+          apiKey: 'test-anthropic-key',
+          baseUrl: 'https://api-key.info',
+        } as any);
+
+        const models = await client.listAvailableModels();
+
+        expect(models.length).toBeGreaterThan(0);
+
+        // Check that we have the expected Claude models
+        const modelNames = models.map(m => m.name);
+        expect(modelNames).toContain('claude-opus-4-20250514');
+        expect(modelNames).toContain('claude-sonnet-4-20250514');
+        expect(modelNames).toContain('claude-3-5-haiku-20241022');
+
+        // Check thinking models
+        expect(modelNames).toContain('claude-opus-4-20250514-thinking');
+        expect(modelNames).toContain('claude-sonnet-4-20250514-thinking');
+
+        // Check that thinking models have the brain emoji
+        const thinkingModel = models.find(m => m.name === 'claude-opus-4-20250514-thinking');
+        expect(thinkingModel?.displayName).toContain('🧠');
+      });
+
+      it('should return empty array for Anthropic when missing API key', async () => {
+        vi.spyOn(client['config'], 'getContentGeneratorConfig').mockReturnValue({
+          authType: AuthType.USE_ANTHROPIC,
+          apiKey: undefined,
+          baseUrl: 'https://api-key.info',
+        } as any);
+
+        const models = await client.listAvailableModels();
+        expect(models).toEqual([]);
+      });
+
+      it('should filter OpenAI models to only show those starting with o, c, or g', async () => {
+        vi.spyOn(client['config'], 'getContentGeneratorConfig').mockReturnValue({
+          authType: AuthType.USE_OPENAI_COMPATIBLE,
+          apiKey: 'test-openai-key',
+          baseUrl: 'https://api.openai.com/v1',
+        } as any);
+
+        const mockResponse = {
+          ok: true,
+          json: vi.fn().mockResolvedValue({
+            data: [
+              { id: 'gpt-4', description: 'GPT-4 model' },
+              { id: 'claude-3', description: 'Claude 3 model' },
+              { id: 'o1-preview', description: 'O1 Preview model' },
+              { id: 'babbage-002', description: 'Babbage model' }, // Should be filtered out
+              { id: 'davinci-002', description: 'Davinci model' }, // Should be filtered out
+              { id: 'text-embedding-ada-002', description: 'Embedding model' }, // Should be filtered out
+              { id: 'whisper-1', description: 'Whisper model' }, // Should be filtered out
+            ],
+          }),
+        };
+
+        (global.fetch as any).mockResolvedValue(mockResponse);
+
+        const models = await client.listAvailableModels();
+
+        expect(models).toEqual([
+          {
+            name: 'gpt-4',
+            displayName: 'gpt-4',
+            description: 'GPT-4 model',
+          },
+          {
+            name: 'claude-3',
+            displayName: 'claude-3',
+            description: 'Claude 3 model',
+          },
+          {
+            name: 'o1-preview',
+            displayName: 'o1-preview',
+            description: 'O1 Preview model',
+          },
+        ]);
+      });
     });
   });
 });
